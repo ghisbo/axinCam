@@ -2,7 +2,7 @@ namespace recordCam.Services
 {
     public class CamRecorder
     {
-        private static CamRecorder? _instance;
+        private static CamRecorder _instance;
         private static readonly object _lockObject = new object();
 
         // Recording timing
