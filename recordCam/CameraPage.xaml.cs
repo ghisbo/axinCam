@@ -6,7 +6,7 @@ namespace recordCam;
 
 public partial class CameraPage : ContentPage
 {
-    private recordCam.Platforms.Android.CameraViewHandler _handler;
+    private recordCam.Platforms.Android.CameraViewHandler? _handler;
     private bool _eventsSubscribed = false;
 
     public CameraPage()

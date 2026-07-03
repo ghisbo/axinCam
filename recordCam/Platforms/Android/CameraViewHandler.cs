@@ -10,22 +10,22 @@ namespace recordCam.Platforms.Android
     {
         public static IPropertyMapper<CameraView, CameraViewHandler> PropertyMapper = new PropertyMapper<CameraView, CameraViewHandler>(ViewHandler.ViewMapper);
 
-        private CancellationTokenSource _recordingCts;
+        private CancellationTokenSource? _recordingCts;
 
         /// <summary>
         /// Event fired every countdown interval to report remaining seconds.
         /// </summary>
-        public event CountdownProgressEventHandler CountdownProgress;
+        public event CountdownProgressEventHandler? CountdownProgress;
 
         /// <summary>
         /// Event fired when recording has completed successfully with the video file ready.
         /// </summary>
-        public event RecordingCompletedEventHandler RecordingCompleted;
+        public event RecordingCompletedEventHandler? RecordingCompleted;
 
         /// <summary>
         /// Event fired when recording starts (after countdown).
         /// </summary>
-        public event RecordingStartedEventHandler RecordingStarted;
+        public event RecordingStartedEventHandler? RecordingStarted;
 
         public CameraViewHandler() : base(PropertyMapper)
         {
