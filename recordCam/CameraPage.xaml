@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:local="clr-namespace:recordCam"
+             x:Class="recordCam.CameraPage">
+    <Grid>
+        <local:CameraView x:Name="cameraView" />
+        <VerticalStackLayout VerticalOptions="End" HorizontalOptions="Center" Spacing="30" Padding="20">
+            <Label x:Name="statusLabel" Text="Ready" HorizontalOptions="Center" BackgroundColor="LightYellow"  Padding="20,10,20,10"/>
+            <HorizontalStackLayout  Spacing="30">
+            <Button x:Name="startButton" Text="Start Recording" Clicked="OnStartRecordingClicked" />
+            <Button x:Name="stopButton" Text="Stop Recording" Clicked="OnStopRecordingClicked" IsEnabled="False" />
+
+            </HorizontalStackLayout>
+        </VerticalStackLayout>
+    </Grid>
+</ContentPage>
