@@ -115,7 +115,9 @@ namespace recordCam.Platforms.Android
             _mediaRecorder.SetVideoEncoder(VideoEncoder.H264);
             _mediaRecorder.SetVideoEncodingBitRate(camRecorder.VideoEncodingBitRate);
             _mediaRecorder.SetMaxDuration(camRecorder.RecordTimeS * 1000);
-            // DO NOT set orientation hint - it blocks frame delivery on this device
+            // Set orientation hint BEFORE Prepare() - works now with correct timing sequence
+            _mediaRecorder.SetOrientationHint((int)camRecorder.Orientation);
+            Logger.WriteDebug($"StartRecording: SetOrientationHint set to {(int)camRecorder.Orientation}");
 
             try
             {

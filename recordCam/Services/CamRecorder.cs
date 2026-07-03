@@ -70,8 +70,8 @@ namespace recordCam.Services
 
     public enum OrientationMode
     {
-        Portrait = 0,
-        Landscape = 90
+        Portrait = 90,
+        Landscape = 0
     }
 
     public enum CameraFace
