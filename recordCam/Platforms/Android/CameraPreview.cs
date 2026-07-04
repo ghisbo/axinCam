@@ -106,6 +106,9 @@ namespace recordCam.Platforms.Android
 
                 _camera.SetParameters(parameters);
 
+                // Set camera display orientation to 90 degrees for portrait mode
+                _camera.SetDisplayOrientation(90);
+
                 // Set preview surface
                 _camera.SetPreviewTexture(surfaceTexture);
                 _camera.StartPreview();
@@ -298,24 +301,31 @@ namespace recordCam.Platforms.Android
             }
         }
 
-        public void PlayBeep(int durationMs, int repeatCount)
+        public void PlayBeep(int durationMs = 100, int repeatCount = 1)
         {
-            // Run beeps on background thread to avoid blocking recording
-            Task.Run(async () =>
+            var camRecorder = CamRecorder.Instance;
+            
+            // If BeepRepeatTimeMs is 0, disable all beeping
+            if (camRecorder.BeepRepeatTimeMs == 0)
+                return;
+
+            try
             {
-                try
+                var toneGen = new global::Android.Media.ToneGenerator(global::Android.Media.Stream.Music, 100);
+                toneGen.StartTone(global::Android.Media.Tone.DtmfS, durationMs);
+                var handler = new Handler(Looper.MainLooper);
+                for (int i = 1; i < repeatCount; i++)
                 {
-                    for (int i = 0; i < repeatCount; i++)
+                    handler.PostDelayed(() =>
                     {
-                        Logger.WriteDebug($"Beep #{i + 1}");
-                        await Task.Delay(durationMs + 100);
-                    }
+                        toneGen.StartTone(global::Android.Media.Tone.DtmfS, durationMs);
+                    }, i * (durationMs + 100));
                 }
-                catch (Exception ex)
-                {
-                    Logger.WriteDebug($"PlayBeep error: {ex.Message}");
-                }
-            });
+            }
+            catch (System.Exception ex)
+            {
+                Logger.WriteDebug($"PlayBeep error: {ex.Message}");
+            }
         }
 
         private class BeepRunnable : Java.Lang.Object, Java.Lang.IRunnable
