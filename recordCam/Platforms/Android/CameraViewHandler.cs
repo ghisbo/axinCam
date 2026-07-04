@@ -177,6 +177,16 @@ namespace recordCam.Platforms.Android
         }
 
         /// <summary>
+        /// Alias for StartRecordingSequence() - starts with countdown automatically (for auto-record scenarios).
+        /// Called when navigating to CameraPage without user clicking Start button.
+        /// Fires CountdownProgress, RecordingStarted, and RecordingCompleted events.
+        /// </summary>
+        public void StartRecordingSequenceAutomatic()
+        {
+            StartRecordingSequence();
+        }
+
+        /// <summary>
         /// Cancels the currently running recording sequence.
         /// </summary>
         public void CancelRecordingSequence()
