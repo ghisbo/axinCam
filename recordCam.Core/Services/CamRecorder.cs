@@ -2,7 +2,7 @@ namespace recordCam.Services
 {
     public class CamRecorder
     {
-        private static CamRecorder _instance;
+        private static CamRecorder? _instance;
         private static readonly object _lockObject = new object();
 
         // Recording timing
@@ -70,8 +70,8 @@ namespace recordCam.Services
 
     public enum OrientationMode
     {
-        Portrait = 90,
-        Landscape = 0
+        Landscape = 0,
+        Portrait = 90
     }
 
     public enum CameraFace

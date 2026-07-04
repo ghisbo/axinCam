@@ -70,6 +70,7 @@
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="9.0.0" />
 		<PackageReference Include="CommunityToolkit.Maui" Version="9.0.0" />
 		<PackageReference Include="CommunityToolkit.Maui.MediaElement" Version="3.0.0" />
+		<ProjectReference Include="..\recordCam.Core\recordCam.Core.csproj" />
 	</ItemGroup>
 
 </Project>
