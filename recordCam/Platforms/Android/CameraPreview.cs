@@ -2,7 +2,7 @@
 using Android;
 using Android.Content;
 using Android.Content.PM;
-using Android.Hardware.Camera2;
+using Android.Hardware;
 using Android.Media;
 using Android.OS;
 using Android.Provider;
@@ -16,44 +16,55 @@ using System;
 
 namespace recordCam.Platforms.Android
 {
-#if ANDROID
+    /// <summary>
+    /// Simplified camera preview and recording using MediaRecorder directly (no Camera2 complexity)
+    /// </summary>
     public class CameraPreview : TextureView, TextureView.ISurfaceTextureListener
     {
-        private CameraDevice _cameraDevice;
-        private CameraCaptureSession _captureSession;
-        private CaptureRequest.Builder _previewRequestBuilder;
+        private Camera _camera;
         private MediaRecorder _mediaRecorder;
-        private string? _outputFilePath;
-        private bool _isRecordingSessionReady = false;
+        private string _outputFilePath;
+        private bool _isRecording = false;
+        private bool _isPreviewing = false;
 
-        // Beeping configuration
+        // Beeping
         private Handler _beepHandler;
         private BeepRunnable _beepRunnable;
 
-        /// <summary>
-        /// Gets the full path of the last recorded video file.
-        /// Returns null if no video has been recorded yet.
-        /// </summary>
-        public string? LastRecordedVideoPath { get; private set; }
-
+        public string LastRecordedVideoPath { get; private set; }
 
         public CameraPreview(Context context) : base(context)
         {
             SurfaceTextureListener = this;
+            _beepHandler = new Handler(Looper.MainLooper);
         }
 
-        public async void OnSurfaceTextureAvailable(global::Android.Graphics.SurfaceTexture surface, int width, int height)
+        public void OnSurfaceTextureAvailable(global::Android.Graphics.SurfaceTexture surface, int width, int height)
         {
-            await OpenCamera(width, height);
+            try
+            {
+                Logger.WriteDebug($"OnSurfaceTextureAvailable: {width}x{height}");
+                StartPreview(surface);
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteDebug($"OnSurfaceTextureAvailable error: {ex.Message}");
+            }
         }
 
         public bool OnSurfaceTextureDestroyed(global::Android.Graphics.SurfaceTexture surface)
         {
-            CloseCamera();
-            return true;
+            Logger.WriteDebug("OnSurfaceTextureDestroyed");
+            StopPreview();
+            return false;
         }
 
         public void OnSurfaceTextureSizeChanged(global::Android.Graphics.SurfaceTexture surface, int width, int height)
+        {
+            Logger.WriteDebug($"OnSurfaceTextureSizeChanged: {width}x{height}");
+        }
+
+        public void OnSurfaceTextureFrameAvailable(global::Android.Graphics.SurfaceTexture surface)
         {
         }
 
@@ -61,325 +72,263 @@ namespace recordCam.Platforms.Android
         {
         }
 
-        public async void StartRecording(int recordTimeS)
+        private void StartPreview(global::Android.Graphics.SurfaceTexture surfaceTexture)
         {
-            var storageStatus = await Permissions.RequestAsync<Permissions.StorageWrite>();
-            var micStatus = await Permissions.RequestAsync<Permissions.Microphone>();
-            Logger.WriteDebug($"Storage permission: {storageStatus}, Microphone permission: {micStatus}");
-
-            if (storageStatus != PermissionStatus.Granted || micStatus != PermissionStatus.Granted)
-            {
-                // Handle the case where permission is denied
-                return;
-            }
-
-            if (_cameraDevice == null) return;
-
-            // Setup MediaRecorder
-            _mediaRecorder = new MediaRecorder();
-
-           
-
-            // _mediaRecorder.SetAudioSource(AudioSource.Mic);  // DISABLED: Focus on video only
-            _mediaRecorder.SetVideoSource(VideoSource.Surface);
-            _mediaRecorder.SetOutputFormat(OutputFormat.Mpeg4);
-
-            var moviesDir = global::Android.OS.Environment.GetExternalStoragePublicDirectory(
-                global::Android.OS.Environment.DirectoryMovies);
-            var camRecorder = CamRecorder.Instance;
-            var recordCamDir = new Java.IO.File(moviesDir, camRecorder.VideoFileMap);
-            if (!recordCamDir.Exists())
-                recordCamDir.Mkdirs();
-
-            var videoFileName = $"swing_{DateTime.Now:yyyyMMdd_HHmmss}.mp4";
-            var videoFile = new Java.IO.File(recordCamDir, videoFileName);
-            _outputFilePath = videoFile.AbsolutePath;
-            LastRecordedVideoPath = _outputFilePath;  // Store for external apps to access
-
-            _mediaRecorder.SetOutputFile(_outputFilePath);
-
-            // Use the same dimensions as the preview buffer for consistency
-            // Validate dimensions before setting
-            int videoWidth = camRecorder.PreviewBufferWidth > 0 ? camRecorder.PreviewBufferWidth : 1280;
-            int videoHeight = camRecorder.PreviewBufferHeight > 0 ? camRecorder.PreviewBufferHeight : 720;
-
-            // MediaRecorder has strict requirements - both dimensions must be even and reasonable
-            if (videoWidth % 2 != 0) videoWidth--;
-            if (videoHeight % 2 != 0) videoHeight--;
-
-            // Ensure dimensions are supported by the device (cap at 1920x1080)
-            videoWidth = System.Math.Min(videoWidth, 1920);
-            videoHeight = System.Math.Min(videoHeight, 1080);
-
-            Logger.WriteDebug($"StartRecording: Setting video size to {videoWidth}x{videoHeight} (buffer was {camRecorder.PreviewBufferWidth}x{camRecorder.PreviewBufferHeight})");
-
-            _mediaRecorder.SetVideoSize(videoWidth, videoHeight);
-            _mediaRecorder.SetVideoFrameRate(camRecorder.VideoFrameRate);
-            _mediaRecorder.SetVideoEncoder(VideoEncoder.H264);
-            _mediaRecorder.SetVideoEncodingBitRate(camRecorder.VideoEncodingBitRate);
-
-            _mediaRecorder.SetMaxDuration(camRecorder.RecordTimeS * 1000);
-            Logger.WriteDebug($"StartRecording: maxduration set to {camRecorder.RecordTimeS * 1000}ms");
-
-            // Set orientation hint BEFORE Prepare() - works now with correct timing sequence
-            _mediaRecorder.SetOrientationHint((int)camRecorder.Orientation);
-            Logger.WriteDebug($"StartRecording: SetOrientationHint set to {(int)camRecorder.Orientation}");
+            if (_isPreviewing) return;
 
             try
             {
-                _mediaRecorder.Prepare();
+                // Request camera permission
+                var status = Permissions.RequestAsync<Permissions.Camera>().Result;
+                if (status != PermissionStatus.Granted)
+                {
+                    Logger.WriteDebug("Camera permission denied");
+                    return;
+                }
+
+                // Open back camera (device index 0)
+                _camera = Camera.Open(0);
+                if (_camera == null)
+                {
+                    Logger.WriteDebug("Failed to open camera");
+                    return;
+                }
+
+                // Configure camera
+                var parameters = _camera.GetParameters();
+                var previewSizes = parameters.SupportedPreviewSizes;
+                if (previewSizes != null && previewSizes.Count > 0)
+                {
+                    var previewSize = previewSizes[0];
+                    parameters.SetPreviewSize(previewSize.Width, previewSize.Height);
+                    Logger.WriteDebug($"Preview size set to {previewSize.Width}x{previewSize.Height}");
+                }
+
+                _camera.SetParameters(parameters);
+
+                // Set preview surface
+                _camera.SetPreviewTexture(surfaceTexture);
+                _camera.StartPreview();
+                _isPreviewing = true;
+
+                Logger.WriteDebug("Camera preview started");
             }
             catch (Exception ex)
             {
-                Logger.WriteDebug($"MediaRecorder prepare failed: {ex.Message}");
-                _mediaRecorder.Release();
-                _mediaRecorder = null;
-                return;
+                Logger.WriteDebug($"StartPreview error: {ex.Message}");
             }
+        }
 
-            var surfaces = new List<Surface>();
-            var texture = SurfaceTexture;
-            var previewSurface = new Surface(texture);
-            surfaces.Add(previewSurface);
+        private void StopPreview()
+        {
+            try
+            {
+                if (_camera != null && _isPreviewing)
+                {
+                    _camera.StopPreview();
+                    _camera.Release();
+                    _camera = null;
+                    _isPreviewing = false;
+                    Logger.WriteDebug("Camera preview stopped");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteDebug($"StopPreview error: {ex.Message}");
+            }
+        }
 
-            var recorderSurface = _mediaRecorder.Surface;
-            surfaces.Add(recorderSurface);
+        public void StartRecording(int recordTimeS)
+        {
+            if (_isRecording || _camera == null) return;
 
-            _previewRequestBuilder = _cameraDevice.CreateCaptureRequest(CameraTemplate.Record);
-            _previewRequestBuilder.AddTarget(previewSurface);
-            _previewRequestBuilder.AddTarget(recorderSurface);
+            try
+            {
+                Logger.WriteDebug($"StartRecording: Preparing MediaRecorder for {recordTimeS}s");
 
-            Logger.WriteDebug($"StartRecording: Capture session being created, MediaRecorder.Start() deferred to OnConfigured");
-            _cameraDevice.CreateCaptureSession(surfaces, new CameraCaptureStateCallback(this, true), null);
+                // Stop preview temporarily
+                _camera.StopPreview();
 
-            PlayBeep(300, 1);
+                // CRITICAL: Unlock camera before MediaRecorder can use it
+                _camera.Unlock();
+
+                // Create MediaRecorder
+                _mediaRecorder = new MediaRecorder();
+                // Set camera FIRST after unlock
+                _mediaRecorder.SetCamera(_camera);
+                // _mediaRecorder.SetAudioSource(AudioSource.Mic);  // Audio disabled - focus on video
+                _mediaRecorder.SetVideoSource(VideoSource.Camera);
+                _mediaRecorder.SetOutputFormat(OutputFormat.Mpeg4);
+                // _mediaRecorder.SetAudioEncoder(AudioEncoder.Aac);  // No audio encoder - audio disabled
+                _mediaRecorder.SetVideoEncoder(VideoEncoder.H264);
+                _mediaRecorder.SetVideoSize(1280, 720);
+                _mediaRecorder.SetVideoFrameRate(30);
+                // _mediaRecorder.SetAudioSamplingRate(44100);  // No audio - disabled
+                _mediaRecorder.SetVideoEncodingBitRate(1024*1024*2); // 2Mbps
+                var camRecorder = CamRecorder.Instance;
+                _mediaRecorder.SetMaxDuration(camRecorder.RecordTimeS * 1000);
+                _mediaRecorder.SetOrientationHint((int)camRecorder.Orientation);
+
+                // Output file
+                var moviesDir = global::Android.OS.Environment.GetExternalStoragePublicDirectory(
+                    global::Android.OS.Environment.DirectoryMovies);
+                var recordCamDir = new Java.IO.File(moviesDir, camRecorder.VideoFileMap);
+                if (!recordCamDir.Exists())
+                    recordCamDir.Mkdirs();
+
+                var videoFileName = $"swing_{DateTime.Now:yyyyMMdd_HHmmss}.mp4";
+                var videoFile = new Java.IO.File(recordCamDir, videoFileName);
+                _outputFilePath = videoFile.AbsolutePath;
+                LastRecordedVideoPath = _outputFilePath;
+
+                _mediaRecorder.SetOutputFile(_outputFilePath);
+
+                Logger.WriteDebug($"StartRecording: Preparing MediaRecorder with output: {_outputFilePath}");
+                _mediaRecorder.Prepare();
+
+                Logger.WriteDebug("StartRecording: Starting MediaRecorder");
+                _mediaRecorder.Start();
+                _isRecording = true;
+
+                Logger.WriteDebug("StartRecording: MediaRecorder started successfully");
+                PlayBeep(300, 1);
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteDebug($"StartRecording error: {ex.Message}");
+                CleanupMediaRecorder();
+                try
+                {
+                    if (_camera != null)
+                        _camera.StartPreview();
+                }
+                catch { }
+            }
         }
 
         public async Task StopRecordingAsync()
         {
+            if (!_isRecording) return;
+
             try
             {
+                Logger.WriteDebug("StopRecording: Stopping MediaRecorder");
                 _mediaRecorder?.Stop();
-                Logger.WriteDebug("MediaRecorder.Stop() called - waiting for file flush");
                 
-                // Give the file time to be fully written to disk (critical!)
+                // Wait for file to be flushed
                 await Task.Delay(500);
-                
-                _mediaRecorder?.Release();
-                _mediaRecorder = null;
-                _isRecordingSessionReady = false;
-                
-                Logger.WriteDebug("MediaRecorder released successfully");
+
+                CleanupMediaRecorder();
+                _isRecording = false;
+
+                // Re-lock camera after MediaRecorder releases it
+                if (_camera != null)
+                {
+                    _camera.Lock();
+                    Logger.WriteDebug("Camera re-locked after recording");
+                    
+                    _camera.StartPreview();
+                    Logger.WriteDebug("Preview restarted");
+                }
+
+                // Log file size
+                if (!string.IsNullOrEmpty(_outputFilePath))
+                {
+                    try
+                    {
+                        var file = new Java.IO.File(_outputFilePath);
+                        long fileSizeBytes = file.Length();
+                        long fileSizeMB = fileSizeBytes / (1024 * 1024);
+                        long fileSizeKB = (fileSizeBytes % (1024 * 1024)) / 1024;
+
+                        string sizeString = fileSizeMB > 0
+                            ? $"{fileSizeMB} MB ({fileSizeKB} KB)"
+                            : $"{fileSizeBytes / 1024} KB";
+
+                        Logger.WriteDebug($"Recording stopped. Video saved to: {_outputFilePath} | Size: {sizeString}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.WriteDebug($"Error getting file size: {ex.Message}");
+                    }
+                }
+
+                PlayBeep(100, 3);
             }
             catch (Exception ex)
             {
                 Logger.WriteDebug($"StopRecording error: {ex.Message}");
-                try
-                {
-                    _mediaRecorder?.Release();
-                    _mediaRecorder = null;
-                }
-                catch { }
+                CleanupMediaRecorder();
             }
-            
-            PlayBeep(100, 3);
-
-            // Log file size with filename
-            if (!string.IsNullOrEmpty(_outputFilePath))
-            {
-                try
-                {
-                    var file = new Java.IO.File(_outputFilePath);
-                    long fileSizeBytes = file.Length();
-                    long fileSizeKB = fileSizeBytes / 1024;
-                    long fileSizeMB = fileSizeKB / 1024;
-
-                    string sizeString = fileSizeMB > 0
-                        ? $"{fileSizeMB} MB ({fileSizeKB} KB)"
-                        : $"{fileSizeKB} KB";
-
-                    Logger.WriteDebug($"Recording stopped. Video saved to: {_outputFilePath} | Size: {sizeString}");
-                }
-                catch (Exception ex)
-                {
-                    Logger.WriteDebug($"Recording stopped. Video saved to: {_outputFilePath} | Error getting file size: {ex.Message}");
-                }
-            }
-            else
-            {
-                Logger.WriteDebug("Recording stopped. No output file path.");
-            }
-
-            CreateCameraPreviewSession();
         }
 
         public void StopRecording()
         {
-            _mediaRecorder?.Stop();
-            _mediaRecorder?.Release();
-            _mediaRecorder = null;
-            _isRecordingSessionReady = false;
-            
-            PlayBeep(100, 3);
-
-            // Log file size with filename
-            if (!string.IsNullOrEmpty(_outputFilePath))
-            {
-                try
-                {
-                    var file = new Java.IO.File(_outputFilePath);
-                    long fileSizeBytes = file.Length();
-                    long fileSizeKB = fileSizeBytes / 1024;
-                    long fileSizeMB = fileSizeKB / 1024;
-
-                    string sizeString = fileSizeMB > 0
-                        ? $"{fileSizeMB} MB ({fileSizeKB} KB)"
-                        : $"{fileSizeKB} KB";
-
-                    Logger.WriteDebug($"Recording stopped. Video saved to: {_outputFilePath} | Size: {sizeString}");
-                }
-                catch (Exception ex)
-                {
-                    Logger.WriteDebug($"Recording stopped. Video saved to: {_outputFilePath} | Error getting file size: {ex.Message}");
-                }
-            }
-            else
-            {
-                Logger.WriteDebug("Recording stopped. No output file path.");
-            }
-
-            CreateCameraPreviewSession();
+            StopRecordingAsync().Wait();
         }
 
-        private async Task OpenCamera(int width, int height)
+        private void CleanupMediaRecorder()
         {
-            var cameraManager = (CameraManager)Context.GetSystemService(Context.CameraService);
-
-            var status = await Permissions.RequestAsync<Permissions.Camera>();
-            if (status != PermissionStatus.Granted)
-            {
-                // Handle the case where permission is denied
-                return;
-            }
-
-            string cameraId = cameraManager.GetCameraIdList()[0];
-            var characteristics = cameraManager.GetCameraCharacteristics(cameraId);
-            var map = (global::Android.Hardware.Camera2.Params.StreamConfigurationMap)characteristics.Get(CameraCharacteristics.ScalerStreamConfigurationMap);
-            var previewSize = map.GetOutputSizes(Java.Lang.Class.FromType(typeof(global::Android.Graphics.SurfaceTexture)))[0];
-
-            cameraManager.OpenCamera(cameraId, new CameraStateCallback(this), null);
-            
-        }
-
-        private void CloseCamera()
-        {
-            _captureSession?.Close();
-            _captureSession = null;
-            _cameraDevice?.Close();
-            _cameraDevice = null;
-            _mediaRecorder?.Release();
-            _mediaRecorder = null;
-        }
-
-        private class CameraStateCallback : CameraDevice.StateCallback
-        {
-            private readonly CameraPreview _owner;
-
-            public CameraStateCallback(CameraPreview owner)
-            {
-                _owner = owner;
-            }
-
-            public override void OnOpened(CameraDevice camera)
-            {
-                _owner._cameraDevice = camera;
-                _owner.CreateCameraPreviewSession();
-            }
-
-            public override void OnDisconnected(CameraDevice camera)
-            {
-                camera.Close();
-                _owner._cameraDevice = null;
-            }
-
-            public override void OnError(CameraDevice camera, CameraError error)
-            {
-                camera.Close();
-                _owner._cameraDevice = null;
-            }
-        }
-
-        public void PlayBeep(int durationMs = 100, int repeatCount = 1)
-        {
-            var camRecorder = CamRecorder.Instance;
-            
-            // If BeepRepeatTimeMs is 0, disable all beeping
-            if (camRecorder.BeepRepeatTimeMs == 0)
-                return;
-
             try
             {
-                var toneGen = new global::Android.Media.ToneGenerator(global::Android.Media.Stream.Music, 100);
-                // Use PropBeep with the requested duration. If Android caps it, so be it.
-                // But keep the ToneGenerator alive for the full duration so it doesn't get GC'd early
-                toneGen.StartTone(global::Android.Media.Tone.DtmfS, durationMs);
-                var handler = new Handler(Looper.MainLooper);
-                for (int i = 1; i < repeatCount; i++)
-                {
-                    handler.PostDelayed(() =>
-                    {
-                        toneGen.StartTone(global::Android.Media.Tone.DtmfS, durationMs);
-                    }, i * (durationMs + 100)); // Increment delay so tones play sequentially
-                }
+                _mediaRecorder?.Release();
+                _mediaRecorder = null;
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
-                Logger.WriteDebug($"Long beep error: {ex.Message}");
+                Logger.WriteDebug($"MediaRecorder cleanup error: {ex.Message}");
             }
         }
 
         public void StartCountdownBeeping()
         {
             var camRecorder = CamRecorder.Instance;
-            
-            // If BeepRepeatTimeMs is 0, don't play any beeps
-            if (camRecorder.BeepRepeatTimeMs == 0)
-            {
-                Logger.WriteDebug("Beeping disabled (BeepRepeatTimeMs = 0)");
-                return;
-            }
+            if (camRecorder.BeepRepeatTimeMs <= 0) return;
 
-            if (_beepHandler == null)
-                _beepHandler = new Handler(Looper.MainLooper);
-
-            // Calculate when to stop beeping: preRecordTimeS - 3 seconds
-            long stopTimeMs = (camRecorder.PreRecordTimeS - 3) * 1000;
-            long startTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-            _beepRunnable = new BeepRunnable(this, startTimeMs, stopTimeMs);
-            _beepHandler.Post(_beepRunnable);
+            _beepRunnable = new BeepRunnable(this, camRecorder.PreRecordTimeS * 1000);
+            _beepHandler?.PostDelayed(_beepRunnable, camRecorder.BeepRepeatTimeMs);
         }
 
         public void StopCountdownBeeping()
         {
-            if (_beepHandler != null && _beepRunnable != null)
+            if (_beepRunnable != null)
             {
-                _beepHandler.RemoveCallbacks(_beepRunnable);
-                Logger.WriteDebug("Countdown beeping stopped.");
+                _beepHandler?.RemoveCallbacks(_beepRunnable);
+                _beepRunnable = null;
             }
+        }
+
+        public void PlayBeep(int durationMs, int repeatCount)
+        {
+            // Run beeps on background thread to avoid blocking recording
+            Task.Run(async () =>
+            {
+                try
+                {
+                    for (int i = 0; i < repeatCount; i++)
+                    {
+                        Logger.WriteDebug($"Beep #{i + 1}");
+                        await Task.Delay(durationMs + 100);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.WriteDebug($"PlayBeep error: {ex.Message}");
+                }
+            });
         }
 
         private class BeepRunnable : Java.Lang.Object, Java.Lang.IRunnable
         {
-            private readonly CameraPreview _preview;
-            private readonly long _startTimeMs;
-            private readonly long _stopTimeMs;
+            private CameraPreview _preview;
+            private long _startTimeMs;
+            private long _stopTimeMs;
 
-            public BeepRunnable(CameraPreview preview, long startTimeMs, long stopTimeMs)
+            public BeepRunnable(CameraPreview preview, long durationMs)
             {
                 _preview = preview;
-                _startTimeMs = startTimeMs;
-                _stopTimeMs = stopTimeMs;
+                _startTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                _stopTimeMs = durationMs;
             }
 
             public void Run()
@@ -389,141 +338,12 @@ namespace recordCam.Platforms.Android
 
                 if (elapsedTimeMs < _stopTimeMs)
                 {
-                    // Play beep
                     _preview.PlayBeep(100, 1);
-                    Logger.WriteDebug($"Beep at {elapsedTimeMs / 1000.0:F1} seconds into countdown.");
-
-                    // Schedule next beep
-                    if (_preview._beepHandler != null)
-                    {
-                        var camRecorder = CamRecorder.Instance;
-                        _preview._beepHandler.PostDelayed(this, camRecorder.BeepRepeatTimeMs);
-                    }
-                }
-                else
-                {
-                    _preview.StopCountdownBeeping();
-                }
-
-            }
-        }
-
-        private void CreateCameraPreviewSession()
-        {
-            var texture = SurfaceTexture;
-            var surface = new Surface(texture);
-
-            _previewRequestBuilder = _cameraDevice.CreateCaptureRequest(CameraTemplate.Preview);
-            _previewRequestBuilder.AddTarget(surface);
-
-            _cameraDevice.CreateCaptureSession(new[] { surface }, new CameraCaptureStateCallback(this, false), null);
-        }
-
-        private class CameraCaptureStateCallback : CameraCaptureSession.StateCallback
-        {
-            private readonly CameraPreview _owner;
-            private readonly bool _isRecording;
-
-            public CameraCaptureStateCallback(CameraPreview owner, bool isRecording)
-            {
-                _owner = owner;
-                _isRecording = isRecording;
-            }
-
-            public override void OnConfigured(CameraCaptureSession session)
-            {
-                _owner._captureSession = session;
-                try
-                {
-                    if (!_isRecording)
-                    {
-                        _owner._previewRequestBuilder.Set(CaptureRequest.ControlAfMode, (int)ControlAFMode.ContinuousPicture);
-                        _owner._captureSession.SetRepeatingRequest(_owner._previewRequestBuilder.Build(), null, null);
-                        Logger.WriteDebug("OnConfigured: Preview session, SetRepeatingRequest called");
-                    }
-                    else
-                    {
-                        // For recording: schedule delayed execution to let MediaRecorder initialize
-                        Logger.WriteDebug("OnConfigured: Recording session configured, scheduling SetRepeatingRequest + MediaRecorder.Start() with 500ms delay");
-                        var handler = new Handler(Looper.MainLooper);
-                        handler.PostDelayed(new StartRecordingRunnable(_owner), 500);
-                    }
-                }
-                catch (CameraAccessException ex)
-                {
-                    Logger.WriteDebug($"CameraAccessException in OnConfigured: {ex.Message}");
-                    System.Diagnostics.Debug.WriteLine(ex);
-                }
-                catch (Exception ex)
-                {
-                    Logger.WriteDebug($"Exception in OnConfigured: {ex.Message}");
-                    System.Diagnostics.Debug.WriteLine(ex);
-                }
-            }
-
-            public override void OnConfigureFailed(CameraCaptureSession session)
-            {
-                Logger.WriteDebug("OnConfigureFailed: Configuration failed.");
-                System.Diagnostics.Debug.WriteLine("Configuration failed.");
-            }
-
-            private class StartRecordingRunnable : Java.Lang.Object, Java.Lang.IRunnable
-            {
-                private readonly CameraPreview _owner;
-
-                public StartRecordingRunnable(CameraPreview owner)
-                {
-                    _owner = owner;
-                }
-
-                public void Run()
-                {
-                    try
-                    {
-                        Logger.WriteDebug("StartRecordingRunnable.Run: Executing SetRepeatingRequest + MediaRecorder.Start()");
-                        
-                        if (_owner._captureSession == null)
-                        {
-                            Logger.WriteDebug("ERROR: _captureSession is null");
-                            return;
-                        }
-                        
-                        if (_owner._previewRequestBuilder == null)
-                        {
-                            Logger.WriteDebug("ERROR: _previewRequestBuilder is null");
-                            return;
-                        }
-                        
-                        if (_owner._mediaRecorder == null)
-                        {
-                            Logger.WriteDebug("ERROR: _mediaRecorder is null");
-                            return;
-                        }
-
-                        // Set repeating request to deliver frames to recorder surface
-                        _owner._captureSession.SetRepeatingRequest(_owner._previewRequestBuilder.Build(), null, null);
-                        Logger.WriteDebug("StartRecordingRunnable: SetRepeatingRequest completed");
-
-                        // Start recording - NOW frames will flow
-                        _owner._mediaRecorder.Start();
-                        _owner._isRecordingSessionReady = true;
-                        Logger.WriteDebug("StartRecordingRunnable: MediaRecorder.Start() completed - frames now flowing");
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.WriteDebug($"StartRecordingRunnable.Run ERROR: {ex.Message}");
-                    }
+                    var camRecorder = CamRecorder.Instance;
+                    _preview._beepHandler?.PostDelayed(this, camRecorder.BeepRepeatTimeMs);
                 }
             }
         }
     }
-#else
-    public class CameraPreview : Microsoft.Maui.Controls.View
-    {
-        public CameraPreview(object context) { }
-        public void StartRecording(int recordTimeS) { }
-        public void StopRecording() { }
-    }
-#endif
 }
 #endif
