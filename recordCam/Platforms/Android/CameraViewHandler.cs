@@ -78,7 +78,7 @@ namespace recordCam.Platforms.Android
         /// </summary>
         private bool _isRecording = false;
 
-        public async void StartRecordingSequence()
+        public async Task StartRecordingSequence()
         {
             _recordingCts = new CancellationTokenSource();
             var camRecorder = CamRecorder.Instance;
@@ -91,43 +91,33 @@ namespace recordCam.Platforms.Android
 
                 // Countdown with progress updates every BeepRepeatTimeMs
                 int totalCountdownMs = (camRecorder.PreRecordTimeS - 2) * 1000;
-                int intervalMs = camRecorder.BeepRepeatTimeMs > 0 ? camRecorder.BeepRepeatTimeMs : 1000; // Default 1 second if beeping disabled
+                int intervalMs = camRecorder.BeepRepeatTimeMs > 0 ? camRecorder.BeepRepeatTimeMs : 1000;
                 
                 for (int elapsedMs = 0; elapsedMs < totalCountdownMs; elapsedMs += intervalMs)
                 {
-                    // Calculate remaining seconds
                     int remainingMs = totalCountdownMs - elapsedMs;
-                    int remainingSeconds = (remainingMs + 999) / 1000; // Round up
+                    int remainingSeconds = (remainingMs + 999) / 1000;
                     
-                    // Fire countdown progress event
                     OnCountdownProgress(new CountdownProgressEventArgs(remainingSeconds));
 
-                    // Wait for next interval
                     int delayMs = System.Math.Min(intervalMs, totalCountdownMs - elapsedMs);
                     await Task.Delay(delayMs, _recordingCts.Token);
                 }
 
-                // Play double beep before recording starts
                 PlayBeep(100, 2);
-
-                // Small delay for the beep to complete
                 await Task.Delay(300, _recordingCts.Token);
 
-                // Start recording
                 StartRecording(camRecorder.RecordTimeS);
                 _isRecording = true;
 
-                // Fire RecordingStarted event
                 OnRecordingStarted(new RecordingStartedEventArgs(camRecorder.RecordTimeS));
 
-                // Wait for recording to complete (or be stopped early)
                 await Task.Delay(camRecorder.RecordTimeS * 1000, _recordingCts.Token);
 
-                // Stop recording (which plays triple beep)
-                StopRecording();
+                // Properly await the async stop
+                await PlatformView.StopRecordingAsync();
                 _isRecording = false;
 
-                // Fire RecordingCompleted event with success
                 var videoPath = GetLastRecordedVideoPath();
                 OnRecordingCompleted(new RecordingCompletedEventArgs(
                     videoPath ?? "Unknown",
@@ -135,44 +125,58 @@ namespace recordCam.Platforms.Android
                     errorMessage: null
                 ));
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
-                // If already recording, user clicked Stop button - save the file
-                if (_isRecording)
+                Logger.WriteDebug($"OperationCanceledException: {ex.Message}");
+                try
                 {
-                    Logger.WriteDebug("Recording stopped early by user");
-                    StopRecording();
+                    if (_isRecording)
+                    {
+                        Logger.WriteDebug("Recording stopped early by user - awaiting async cleanup");
+                        await PlatformView.StopRecordingAsync();
+                    }
+                    else
+                    {
+                        Logger.WriteDebug("Recording cancelled during countdown - awaiting async cleanup");
+                        await PlatformView.StopRecordingAsync();
+                    }
+                }
+                catch (Exception cleanupEx)
+                {
+                    Logger.WriteDebug($"Cleanup error on cancel: {cleanupEx.Message}");
+                }
+                finally
+                {
                     _isRecording = false;
                     var videoPath = GetLastRecordedVideoPath();
                     OnRecordingCompleted(new RecordingCompletedEventArgs(
                         videoPath ?? "Unknown",
-                        success: true,
-                        errorMessage: null
-                    ));
-                }
-                else
-                {
-                    // Cancelled during countdown
-                    Logger.WriteDebug("Recording cancelled during countdown");
-                    StopRecording();
-                    _isRecording = false;
-                    OnRecordingCompleted(new RecordingCompletedEventArgs(
-                        GetLastRecordedVideoPath() ?? "Unknown",
-                        success: false,
+                        success: _isRecording == false,
                         errorMessage: "Recording was cancelled"
                     ));
                 }
             }
             catch (System.Exception ex)
             {
-                Logger.WriteDebug($"Error in StartRecordingSequence: {ex.Message}");
-                StopRecording();
-                _isRecording = false;
-                OnRecordingCompleted(new RecordingCompletedEventArgs(
-                    GetLastRecordedVideoPath() ?? "Unknown",
-                    success: false,
-                    errorMessage: ex.Message
-                ));
+                Logger.WriteDebug($"Exception in StartRecordingSequence: {ex.Message}");
+                try
+                {
+                    Logger.WriteDebug("Error occurred - awaiting async cleanup");
+                    await PlatformView.StopRecordingAsync();
+                }
+                catch (Exception cleanupEx)
+                {
+                    Logger.WriteDebug($"Cleanup error on exception: {cleanupEx.Message}");
+                }
+                finally
+                {
+                    _isRecording = false;
+                    OnRecordingCompleted(new RecordingCompletedEventArgs(
+                        GetLastRecordedVideoPath() ?? "Unknown",
+                        success: false,
+                        errorMessage: ex.Message
+                    ));
+                }
             }
         }
 

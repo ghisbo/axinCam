@@ -77,6 +77,9 @@ namespace recordCam.Platforms.Android
 
             // Setup MediaRecorder
             _mediaRecorder = new MediaRecorder();
+
+           
+
             // _mediaRecorder.SetAudioSource(AudioSource.Mic);  // DISABLED: Focus on video only
             _mediaRecorder.SetVideoSource(VideoSource.Surface);
             _mediaRecorder.SetOutputFormat(OutputFormat.Mpeg4);
@@ -114,7 +117,10 @@ namespace recordCam.Platforms.Android
             _mediaRecorder.SetVideoFrameRate(camRecorder.VideoFrameRate);
             _mediaRecorder.SetVideoEncoder(VideoEncoder.H264);
             _mediaRecorder.SetVideoEncodingBitRate(camRecorder.VideoEncodingBitRate);
+
             _mediaRecorder.SetMaxDuration(camRecorder.RecordTimeS * 1000);
+            Logger.WriteDebug($"StartRecording: maxduration set to {camRecorder.RecordTimeS * 1000}ms");
+
             // Set orientation hint BEFORE Prepare() - works now with correct timing sequence
             _mediaRecorder.SetOrientationHint((int)camRecorder.Orientation);
             Logger.WriteDebug($"StartRecording: SetOrientationHint set to {(int)camRecorder.Orientation}");
@@ -147,6 +153,64 @@ namespace recordCam.Platforms.Android
             _cameraDevice.CreateCaptureSession(surfaces, new CameraCaptureStateCallback(this, true), null);
 
             PlayBeep(300, 1);
+        }
+
+        public async Task StopRecordingAsync()
+        {
+            try
+            {
+                _mediaRecorder?.Stop();
+                Logger.WriteDebug("MediaRecorder.Stop() called - waiting for file flush");
+                
+                // Give the file time to be fully written to disk (critical!)
+                await Task.Delay(500);
+                
+                _mediaRecorder?.Release();
+                _mediaRecorder = null;
+                _isRecordingSessionReady = false;
+                
+                Logger.WriteDebug("MediaRecorder released successfully");
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteDebug($"StopRecording error: {ex.Message}");
+                try
+                {
+                    _mediaRecorder?.Release();
+                    _mediaRecorder = null;
+                }
+                catch { }
+            }
+            
+            PlayBeep(100, 3);
+
+            // Log file size with filename
+            if (!string.IsNullOrEmpty(_outputFilePath))
+            {
+                try
+                {
+                    var file = new Java.IO.File(_outputFilePath);
+                    long fileSizeBytes = file.Length();
+                    long fileSizeKB = fileSizeBytes / 1024;
+                    long fileSizeMB = fileSizeKB / 1024;
+
+                    string sizeString = fileSizeMB > 0
+                        ? $"{fileSizeMB} MB ({fileSizeKB} KB)"
+                        : $"{fileSizeKB} KB";
+
+                    Logger.WriteDebug($"Recording stopped. Video saved to: {_outputFilePath} | Size: {sizeString}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.WriteDebug($"Recording stopped. Video saved to: {_outputFilePath} | Error getting file size: {ex.Message}");
+                }
+            }
+            else
+            {
+                Logger.WriteDebug("Recording stopped. No output file path.");
+            }
+
+            CreateCameraPreviewSession();
         }
 
         public void StopRecording()
@@ -380,9 +444,9 @@ namespace recordCam.Platforms.Android
                     else
                     {
                         // For recording: schedule delayed execution to let MediaRecorder initialize
-                        Logger.WriteDebug("OnConfigured: Recording session configured, scheduling SetRepeatingRequest + MediaRecorder.Start() with 100ms delay");
+                        Logger.WriteDebug("OnConfigured: Recording session configured, scheduling SetRepeatingRequest + MediaRecorder.Start() with 500ms delay");
                         var handler = new Handler(Looper.MainLooper);
-                        handler.PostDelayed(new StartRecordingRunnable(_owner), 100);
+                        handler.PostDelayed(new StartRecordingRunnable(_owner), 500);
                     }
                 }
                 catch (CameraAccessException ex)
