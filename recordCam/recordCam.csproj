@@ -2,7 +2,7 @@
 
 	<PropertyGroup>
 		<TargetFrameworks>net9.0-android</TargetFrameworks>
-		<MauiVersion>9.0.110</MauiVersion>
+		<MauiVersion>9.0.120</MauiVersion>
 		<EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
 
 		<OutputType>Library</OutputType>
